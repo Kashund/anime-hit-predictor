@@ -24,12 +24,17 @@ import pandas as pd
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.impute import SimpleImputer
-from sklearn.metrics import average_precision_score, f1_score, precision_recall_curve, roc_auc_score
+from sklearn.metrics import (
+    average_precision_score,
+    f1_score,
+    precision_recall_curve,
+    roc_auc_score,
+)
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
-from .preprocess import load_details, make_hit_label
+from .preprocess import filter_missing_members_for_label, load_details, make_hit_label
 from .rf_features import apply_vocab_map, build_vocab_map, ensure_columns
 
 
@@ -47,7 +52,13 @@ def best_threshold_from_valid_f1(y_true: np.ndarray, y_prob: np.ndarray) -> floa
     return float(thresholds[best_idx])
 
 
-def build_pipeline(final_cat: List[str], final_num: List[str], final_bin: List[str], n_estimators: int, seed: int):
+def build_pipeline(
+    final_cat: List[str],
+    final_num: List[str],
+    final_bin: List[str],
+    n_estimators: int,
+    seed: int,
+):
     cat_pipe = Pipeline(
         steps=[
             ("imputer", SimpleImputer(strategy="most_frequent")),
@@ -60,7 +71,9 @@ def build_pipeline(final_cat: List[str], final_num: List[str], final_bin: List[s
             ("scaler", StandardScaler()),
         ]
     )
-    bin_pipe = Pipeline(steps=[("imputer", SimpleImputer(strategy="constant", fill_value=0))])
+    bin_pipe = Pipeline(
+        steps=[("imputer", SimpleImputer(strategy="constant", fill_value=0))]
+    )
 
     preprocess = ColumnTransformer(
         transformers=[
@@ -95,45 +108,47 @@ def main():
     art_dir.mkdir(parents=True, exist_ok=True)
 
     # Load and parse list-like columns
-    df = load_details(str(details_path))
+    details_frame = load_details(str(details_path))
+
+    details_frame = filter_missing_members_for_label(details_frame)
 
     # Label (allowed leakage source for training ONLY)
-    if "members" not in df.columns:
-        raise ValueError("details.csv must contain 'members' to build the hit label")
-    df[TARGET_COL] = make_hit_label(df, topk_fraction=float(args.topk_fraction))
+    details_frame[TARGET_COL] = make_hit_label(
+        details_frame, topk_fraction=float(args.topk_fraction)
+    )
 
-    base_cats = [c for c in BASE_CATS_DEFAULT if c in df.columns]
-    base_nums = [c for c in BASE_NUMS_DEFAULT if c in df.columns]
-    multi_cols = [c for c in MULTI_COLS_DEFAULT if c in df.columns]
+    base_cats = [c for c in BASE_CATS_DEFAULT if c in details_frame.columns]
+    base_nums = [c for c in BASE_NUMS_DEFAULT if c in details_frame.columns]
+    multi_cols = [c for c in MULTI_COLS_DEFAULT if c in details_frame.columns]
 
     # Build canonical 3-way split once (80/10/10)
-    train_df, temp_df = train_test_split(
-        df,
+    train_frame, temp_frame = train_test_split(
+        details_frame,
         test_size=0.2,
         random_state=int(args.seed),
-        stratify=df[TARGET_COL],
+        stratify=details_frame[TARGET_COL],
     )
-    valid_df, test_df = train_test_split(
-        temp_df,
+    valid_frame, test_frame = train_test_split(
+        temp_frame,
         test_size=0.5,
         random_state=int(args.seed),
-        stratify=temp_df[TARGET_COL],
+        stratify=temp_frame[TARGET_COL],
     )
 
     # Build vocab on TRAIN ONLY
-    vocab_map = build_vocab_map(train_df, multi_cols=multi_cols, topk=int(args.topk))
+    vocab_map = build_vocab_map(train_frame, multi_cols=multi_cols, topk=int(args.topk))
 
     def make_X(df_in: pd.DataFrame) -> pd.DataFrame:
         X = df_in[base_cats + base_nums + list(vocab_map.keys())].copy()
         X = apply_vocab_map(X, vocab_map=vocab_map, drop_original=True)
         return X
 
-    X_train = make_X(train_df)
-    y_train = train_df[TARGET_COL].to_numpy()
-    X_valid = make_X(valid_df)
-    y_valid = valid_df[TARGET_COL].to_numpy()
-    X_test = make_X(test_df)
-    y_test = test_df[TARGET_COL].to_numpy()
+    X_train = make_X(train_frame)
+    y_train = train_frame[TARGET_COL].to_numpy()
+    X_valid = make_X(valid_frame)
+    y_valid = valid_frame[TARGET_COL].to_numpy()
+    X_test = make_X(test_frame)
+    y_test = test_frame[TARGET_COL].to_numpy()
 
     final_cat = [c for c in base_cats if c in X_train.columns]
     final_num = [c for c in base_nums if c in X_train.columns]
@@ -146,7 +161,9 @@ def main():
     X_test = X_test[final_cat + final_num + final_bin]
     X_train = X_train[final_cat + final_num + final_bin]
 
-    pipe = build_pipeline(final_cat, final_num, final_bin, n_estimators=args.n_estimators, seed=args.seed)
+    pipe = build_pipeline(
+        final_cat, final_num, final_bin, n_estimators=args.n_estimators, seed=args.seed
+    )
     pipe.fit(X_train, y_train)
 
     p_valid = pipe.predict_proba(X_valid)[:, 1]
@@ -154,8 +171,16 @@ def main():
 
     p_test = pipe.predict_proba(X_test)[:, 1]
     metrics = {
-        "roc_auc": float(roc_auc_score(y_test, p_test)) if len(np.unique(y_test)) > 1 else float("nan"),
-        "pr_auc": float(average_precision_score(y_test, p_test)) if len(np.unique(y_test)) > 1 else float("nan"),
+        "roc_auc": (
+            float(roc_auc_score(y_test, p_test))
+            if len(np.unique(y_test)) > 1
+            else float("nan")
+        ),
+        "pr_auc": (
+            float(average_precision_score(y_test, p_test))
+            if len(np.unique(y_test)) > 1
+            else float("nan")
+        ),
         "f1": float(f1_score(y_test, (p_test >= t).astype(int), zero_division=0)),
         "threshold": float(t),
         "seed": int(args.seed),

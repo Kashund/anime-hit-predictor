@@ -63,10 +63,21 @@ health:
 	curl -s http://localhost:$(PORT)/health && echo
 
 test:
-	curl -s -X POST "http://localhost:$(PORT)/predict" \
+	curl -fsS -X POST "http://localhost:$(PORT)/predict" \
 	  -H "Content-Type: application/json" \
 	  -d '{"type":"TV","season":"Spring","year":2025,"episodes":12,"source":"Manga","rating":"PG-13","status":"Upcoming","genres":["Action","Sci-Fi"],"themes":[],"demographics":["Shounen"],"studios":[]}' \
-	  && echo
+	  | python - <<'PY'
+import json
+import sys
+
+payload = json.load(sys.stdin)
+required_keys = {"hit_probability", "hit", "backend", "threshold"}
+missing_keys = required_keys.difference(payload.keys())
+if missing_keys:
+    raise SystemExit(f"Missing keys in response: {missing_keys}")
+print(payload)
+PY
+	@echo
 
 # ---- Docker (FastAPI) ----
 docker-build:

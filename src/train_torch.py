@@ -8,10 +8,21 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset, DataLoader
 
-from sklearn.metrics import roc_auc_score, average_precision_score, f1_score, precision_recall_curve
+from sklearn.metrics import (
+    roc_auc_score,
+    average_precision_score,
+    f1_score,
+    precision_recall_curve,
+)
 from sklearn.model_selection import train_test_split
 
-from .preprocess import load_details, build_preproc, make_tabular_matrix, make_hit_label
+from .preprocess import (
+    build_preproc,
+    filter_missing_members_for_label,
+    load_details,
+    make_hit_label,
+    make_tabular_matrix,
+)
 from .model_torch import HitNet, TabularModelConfig
 
 
@@ -117,28 +128,35 @@ def _best_threshold_from_valid_f1(y_true: np.ndarray, y_prob: np.ndarray) -> flo
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--details", default="data/details.csv")
-    ap.add_argument("--topk", type=float, default=0.20, help="Top fraction of members treated as hit label.")
+    ap.add_argument(
+        "--topk",
+        type=float,
+        default=0.20,
+        help="Top fraction of members treated as hit label.",
+    )
     ap.add_argument("--epochs", type=int, default=5)
     ap.add_argument("--batch-size", type=int, default=256)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--out-dir", default="artifacts")
-    ap.add_argument("--threshold", type=float, default=0.5, help="Threshold for reporting F1 during eval.")
+    ap.add_argument(
+        "--threshold",
+        type=float,
+        default=0.5,
+        help="Threshold for reporting F1 during eval.",
+    )
     args = ap.parse_args()
 
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
 
-    df = load_details(args.details)
+    details_frame = load_details(args.details)
+    details_frame = filter_missing_members_for_label(details_frame)
 
     # label uses members only during training; do NOT include members as a feature
-    y = make_hit_label(df, topk_fraction=args.topk).values.astype(np.int64)
-
-    # keep only rows with usable members for label creation
-    members_num = pd.to_numeric(df.get("members"), errors="coerce")
-    mask = members_num.notna().values
-    df = df.loc[mask].reset_index(drop=True)
-    y = y[mask]
+    labels = make_hit_label(details_frame, topk_fraction=args.topk).values.astype(
+        np.int64
+    )
 
     # Multi-hot list columns (skip missing columns automatically)
     topk_map_full: Dict[str, int] = {
@@ -147,18 +165,18 @@ def main():
         "demographics": 10,
         "studios": 25,
     }
-    topk_map = {k: v for k, v in topk_map_full.items() if k in df.columns}
+    topk_map = {k: v for k, v in topk_map_full.items() if k in details_frame.columns}
     missing = [k for k in topk_map_full.keys() if k not in topk_map]
     if missing:
         print(f"warning: missing list columns in details.csv (skipping): {missing}")
 
     # 80/10/10 split (stratified)
     train_df, temp_df, y_train, y_temp = train_test_split(
-        df,
-        y,
+        details_frame,
+        labels,
         test_size=0.2,
         random_state=args.seed,
-        stratify=y,
+        stratify=labels,
     )
     valid_df, test_df, y_valid, y_test = train_test_split(
         temp_df,
@@ -201,7 +219,9 @@ def main():
         tr_loss = train_one_epoch(model, train_loader, opt, loss_fn, device)
         m = eval_epoch(model, val_loader, device, threshold=args.threshold)
 
-        primary = m["roc_auc"] if np.isfinite(m["roc_auc"]) else m.get("sep", float("-inf"))
+        primary = (
+            m["roc_auc"] if np.isfinite(m["roc_auc"]) else m.get("sep", float("-inf"))
+        )
         print(
             "epoch={epoch} train_loss={tr_loss:.4f} roc_auc={roc:.4f} pr_auc={pr:.4f} f1={f1:.4f}".format(
                 epoch=epoch,
@@ -218,7 +238,9 @@ def main():
 
             torch.save(model.state_dict(), out_dir / "hitnet.pt")
             (out_dir / "preproc.json").write_text(json.dumps(cfg.to_dict(), indent=2))
-            (out_dir / "hitnet_val_metrics.json").write_text(json.dumps(best_metrics, indent=2))
+            (out_dir / "hitnet_val_metrics.json").write_text(
+                json.dumps(best_metrics, indent=2)
+            )
             print(
                 f"saved: {out_dir/'hitnet.pt'} | {out_dir/'preproc.json'} | {out_dir/'hitnet_val_metrics.json'}"
             )
@@ -232,14 +254,24 @@ def main():
     test_pred = (yt_prob >= best_threshold).astype(int)
 
     hitnet_test = {
-        "roc_auc": float(roc_auc_score(yt_true, yt_prob)) if len(np.unique(yt_true)) == 2 else float("nan"),
-        "pr_auc": float(average_precision_score(yt_true, yt_prob)) if len(np.unique(yt_true)) == 2 else float("nan"),
+        "roc_auc": (
+            float(roc_auc_score(yt_true, yt_prob))
+            if len(np.unique(yt_true)) == 2
+            else float("nan")
+        ),
+        "pr_auc": (
+            float(average_precision_score(yt_true, yt_prob))
+            if len(np.unique(yt_true)) == 2
+            else float("nan")
+        ),
         "f1": float(f1_score(yt_true, test_pred, zero_division=0)),
         "threshold": float(best_threshold),
         "seed": int(args.seed),
     }
 
-    (out_dir / "hitnet_threshold.json").write_text(json.dumps({"threshold": best_threshold}, indent=2))
+    (out_dir / "hitnet_threshold.json").write_text(
+        json.dumps({"threshold": best_threshold}, indent=2)
+    )
     (out_dir / "hitnet_metrics.json").write_text(json.dumps(hitnet_test, indent=2))
 
     print("done. best val metrics:", best_metrics)

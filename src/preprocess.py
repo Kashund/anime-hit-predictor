@@ -46,6 +46,7 @@ def _is_nullish(x: Any) -> bool:
     # optional pandas NA handling (training env)
     try:
         import pandas as pd  # type: ignore
+
         return bool(pd.isna(x))
     except Exception:
         return False
@@ -66,7 +67,9 @@ def topk_labels(values: Iterable[List[str]], k: int) -> List[str]:
     for lst in values:
         for it in lst:
             counts[it] = counts.get(it, 0) + 1
-    return [lab for lab, _ in sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:k]]
+    return [
+        lab for lab, _ in sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:k]
+    ]
 
 
 @dataclass
@@ -74,7 +77,9 @@ class PreprocConfig:
     cat_cols: List[str]
     num_cols: List[str]
     multilabel: Dict[str, List[str]]  # column -> allowed labels (top-k)
-    cat_vocab: Dict[str, Dict[str, int]]  # col -> value -> index (0 reserved for unknown)
+    cat_vocab: Dict[
+        str, Dict[str, int]
+    ]  # col -> value -> index (0 reserved for unknown)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -112,11 +117,19 @@ def build_preproc(
 
     cat_vocab: Dict[str, Dict[str, int]] = {}
     for c in cat_cols:
-        values = df_details[c].fillna("__MISSING__").astype(str).value_counts().index.tolist()
+        values = (
+            df_details[c]
+            .fillna("__MISSING__")
+            .astype(str)
+            .value_counts()
+            .index.tolist()
+        )
         # 0 = unknown
         cat_vocab[c] = {v: i + 1 for i, v in enumerate(values)}
 
-    return PreprocConfig(cat_cols=cat_cols, num_cols=num_cols, multilabel=multilabel, cat_vocab=cat_vocab)
+    return PreprocConfig(
+        cat_cols=cat_cols, num_cols=num_cols, multilabel=multilabel, cat_vocab=cat_vocab
+    )
 
 
 def make_tabular_matrix(df, cfg: PreprocConfig) -> Tuple[np.ndarray, np.ndarray]:
@@ -142,7 +155,9 @@ def make_tabular_matrix(df, cfg: PreprocConfig) -> Tuple[np.ndarray, np.ndarray]
     multihot_data = []
     for col, labels in cfg.multilabel.items():
         for lab in labels:
-            multihot_data.append(df[col].apply(lambda lst: int(lab in lst)).values.astype(np.float32))
+            multihot_data.append(
+                df[col].apply(lambda lst: int(lab in lst)).values.astype(np.float32)
+            )
     if multihot_data:
         mh = np.vstack(multihot_data).T
         nums = np.hstack([nums, mh])
@@ -159,6 +174,16 @@ def load_details(path: str, list_cols: Optional[List[str]] = None):
     for c in list_cols:
         df[c] = df[c].apply(parse_listlike)
     return df
+
+
+def filter_missing_members_for_label(details_frame):
+    import pandas as pd  # training-time dependency
+
+    if "members" not in details_frame.columns:
+        raise ValueError("details.csv must contain 'members' to build the hit label")
+
+    members_series = pd.to_numeric(details_frame["members"], errors="coerce")
+    return details_frame.loc[members_series.notna()].reset_index(drop=True)
 
 
 def make_hit_label(df_details, topk_fraction: float = 0.10):

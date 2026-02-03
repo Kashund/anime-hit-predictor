@@ -96,7 +96,7 @@ Because this is a **cold-start** problem, the following fields are **not allowed
 - `rank`, `popularity`
 - any columns from `stats.csv` (watching/completed/dropped/plan_to_watch/…)
 
-✅ We *can* use `members` to **create labels** during training (e.g., “top 10%”), but we do not **not** feed it into the model at inference time.
+✅ We *can* use `members` to **create labels** during training (e.g., “top 10%”), but we do **not** feed it into the model at inference time.
 
 ---
 
@@ -215,7 +215,7 @@ cd <YOUR_REPO_FOLDER_NAME_HERE>
 ```
 
 **Where to run commands:**  
-Run commands **inside the project folder** (the one that contains `train.py` OR `src/`).
+Run commands **inside the project folder** (the one that contains `src/`).
 
 ### Option B — Download ZIP
 1) Download ZIP from GitHub  
